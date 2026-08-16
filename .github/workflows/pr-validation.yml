@@ -1,0 +1,97 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+
+permissions:
+  contents: read
+
+# A new push to the same PR makes the in-flight run obsolete; cancel it instead
+# of paying for a result nobody will read.
+concurrency:
+  group: pr-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up environment
+        uses: ./.github/actions/setup-env
+
+      # `--locked` instead of a plain sync: it fails when `uv.lock` no longer
+      # agrees with `pyproject.toml`, which turns "someone edited the dependency
+      # groups without re-locking" into a CI failure rather than a silent
+      # re-resolution that makes the run non-reproducible.
+      # No `--all-extras`: the project defines no extras, and with
+      # `tool.uv.package = false` the only thing to install is the `dev` group,
+      # which uv syncs by default.
+      - name: Install dependencies
+        run: |
+          uv sync --locked
+
+      # pytest exits 5 when it collects nothing, including when `testpaths`
+      # points at a directory that does not exist. This repository has no
+      # `tests/` directory yet, and an empty suite is not a validation failure,
+      # so exit 5 is downgraded to a warning. Every other non-zero exit — a real
+      # test failure (1), an internal error (3), a usage error (4) — still fails
+      # the job. Delete this guard once `tests/` exists.
+      - name: Run pytest
+        run: |
+          set +e
+          uv run pytest
+          status=$?
+          set -e
+          if [ "${status}" -eq 5 ]; then
+            echo "::warning::pytest collected no tests (no tests/ directory yet)"
+            exit 0
+          fi
+          exit "${status}"
+
+      # The lint gate is deliberately split in two.
+      #
+      # The full rule set configured in pyproject.toml (E, F, D1, ANN2) reports
+      # 67 findings on the current tree — almost all missing docstrings and
+      # missing annotations on `__init__`/`key`. Gating on it would make every
+      # pull request red for pre-existing debt, which trains everyone to ignore
+      # the check. Gating on nothing is equally useless.
+      #
+      # So: `F` (pyflakes — undefined names, unused imports, f-strings without
+      # placeholders: actual defects, and clean today) blocks the merge, while
+      # the complete rule set is reported as inline GitHub annotations without
+      # blocking. Move rules from the advisory step to the blocking one as the
+      # backlog is paid down; when it reaches zero, collapse both into a single
+      # blocking `uv run ruff check .`.
+      - name: Run ruff (blocking rules)
+        run: |
+          uv run ruff check . --select F --output-format=concise
+
+      - name: Run ruff (full rule set, advisory)
+        continue-on-error: true
+        run: |
+          uv run ruff check . --output-format=github
+
+      # The mypy target files are declared in pyproject.toml (`tool.mypy.files`),
+      # so no path argument is passed here. Modules owned by the host ComfyUI
+      # installation are covered by `ignore_missing_imports` overrides, which is
+      # what makes this run standalone on a runner without ComfyUI present.
+      - name: Run mypy
+        run: |
+          uv run mypy --show-column-numbers --no-error-summary
+
+      # The pytest addopts write an HTML report and coverage into workspace_temp/.
+      # Keeping them as artifacts makes a red run diagnosable without re-running.
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            workspace_temp/report.html
+            workspace_temp/coverage_html
+          if-no-files-found: ignore
+          retention-days: 7

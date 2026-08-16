@@ -1,0 +1,114 @@
+name: Claude Code (Issue)
+
+# Claude on an issue: the entry point for new work. The action always creates a
+# fresh branch here (it cannot commit to an issue), and normally opens a PR from
+# it. Once that PR exists, follow-up work belongs in claude-pr.yml, where Claude
+# commits to the PR branch and the thread continues naturally.
+#
+# See the "Find previous Claude branch" step for what happens when you comment
+# again on the issue instead.
+#
+# NOTE: `issues` and `issue_comment` are not `pull_request` events, so GitHub
+# always runs this file from the DEFAULT branch. Edits here cannot be tested
+# from a PR — they only take effect once merged.
+on:
+  issues:
+    types: [opened, assigned]
+  issue_comment:
+    types: [created]
+
+jobs:
+  claude:
+    # The negated `github.event.issue.pull_request` keeps PR comments out; those
+    # belong to claude-pr.yml.
+    if: |
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for Claude to push commits and branches
+      pull-requests: write # Required for Claude to open/update PRs
+      issues: write # Required for Claude to update its progress comment
+      id-token: write
+      actions: read # Required for Claude to read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up environment
+        uses: ./.github/actions/setup-env
+        with:
+          requires-ai-context: "true"
+          source-repo: ${{ secrets.AI_CONTEXT }}
+          context-token: ${{ secrets.AI_CONTEXT_TOKEN }}
+
+      # The venv is materialized up front so the agent can run pytest/ruff/mypy
+      # straight away instead of spending a turn on `uv sync`. `--locked` fails
+      # when uv.lock no longer agrees with pyproject.toml, instead of silently
+      # re-resolving into a non-reproducible environment.
+      - name: Install dependencies
+        run: |
+          uv sync --locked
+
+      - name: Find previous Claude branch for this issue
+        id: prev_branch
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # The action names issue branches 'claude/issue-<n>-<YYYYmmdd-HHMM>' and
+          # never reuses an existing one: a follow-up comment would otherwise branch
+          # off the default branch and redo the work from scratch. Pointing
+          # base_branch at the newest previous branch makes the new one a descendant
+          # of it, so the earlier work carries over.
+          #
+          # The timestamp is zero-padded, so a lexicographic sort is chronological.
+          # The trailing '-' in the pattern keeps issue #5 from matching issue #50.
+          branch=$(git ls-remote --heads origin "refs/heads/claude/issue-${ISSUE_NUMBER}-*" \
+            | awk '{print $2}' | sed 's#^refs/heads/##' | sort | tail -n 1)
+          if [ -n "${branch}" ]; then
+            echo "Continuing from previous branch: ${branch}"
+            echo "base=${branch}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No previous branch for issue #${ISSUE_NUMBER}; starting from the default branch"
+            echo "base=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pick model from trigger body
+        id: model
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          body=$(printf '%s\n%s\n%s\n' "$COMMENT_BODY" "$ISSUE_BODY" "$ISSUE_TITLE" | tr '[:upper:]' '[:lower:]')
+          if printf '%s' "$body" | grep -Eq '@claude[[:space:]]+opus\b'; then
+            echo "model=opus" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$body" | grep -Eq '@claude[[:space:]]+sonnet\b'; then
+            echo "model=sonnet" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$body" | grep -Eq '@claude[[:space:]]+haiku\b'; then
+            echo "model=haiku" >> "$GITHUB_OUTPUT"
+          else
+            echo "model=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Empty on the first run, so the action falls back to the default branch.
+          base_branch: ${{ steps.prev_branch.outputs.base }}
+
+          # This is an optional setting that allows Claude to read CI results on PRs
+          additional_permissions: |
+            actions: read
+
+          # Allow Claude to run the project's dev toolchain and Git/GitHub commands so it
+          # can validate changes (tests, lint, type-check) and manage PRs without manual
+          # approval. Note that the runner has no ComfyUI installation, so the GUI and the
+          # Mimic execution engine cannot actually be run here — only static validation.
+          claude_args: |
+            --allowed-tools Bash(uv:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Bash(gh:*),Bash(git:*) ${{ steps.model.outputs.model != '' && format('--model {0}', steps.model.outputs.model) || '' }}

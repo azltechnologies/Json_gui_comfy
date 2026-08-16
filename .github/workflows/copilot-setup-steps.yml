@@ -1,0 +1,41 @@
+name: Copilot Setup Steps
+
+# GitHub's Copilot coding agent runs the steps of the `copilot-setup-steps` job
+# before it starts working, so the environment it lands in matches CI. The
+# `push` trigger exists only to validate that this job still runs green whenever
+# the setup itself is edited — otherwise a broken setup is discovered by the
+# agent, silently, in the middle of a task.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - .github/actions/setup-env/action.yml
+      - .github/actions/setup-ai-context/action.yml
+      - .python-version
+      - pyproject.toml
+      - uv.lock
+
+jobs:
+  copilot-setup-steps: # This name is mandatory
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # This is mandatory to allow the action to read the repository contents
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Same shared instruction files the Claude workflows pull in, so the
+      # Copilot agent codes against the same conventions.
+      - name: Set up environment
+        uses: ./.github/actions/setup-env
+        with:
+          requires-ai-context: "true"
+          source-repo: ${{ secrets.AI_CONTEXT }}
+          context-token: ${{ secrets.AI_CONTEXT_TOKEN }}
+
+      # The agent lands in a workspace with the venv already built, so its first
+      # turn is spent on the task rather than on `uv sync`.
+      - name: Install dependencies
+        run: |
+          uv sync --locked

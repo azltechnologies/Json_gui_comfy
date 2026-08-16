@@ -1,0 +1,123 @@
+# Automated dependency vulnerability scanning.
+#
+# Audits the locked development dependencies (`uv.lock`) with `pip-audit` against the
+# OSV advisory database. Only the dev toolchain is covered on purpose: the runtime
+# dependencies of this project (torch, comfy, custom nodes) belong to the host
+# ComfyUI installation and are neither declared nor locked here.
+#
+# On a pull request the job simply fails, so the finding is visible in the checks.
+# On the weekly/manual run there is no PR to fail, so the findings are reported into
+# a single tracking issue: a new one is opened, or a comment is added to the one that
+# is already open, which keeps a recurring weekly scan from spamming the tracker.
+name: Dependency Vulnerability Scan
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly, Monday 06:00 UTC
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up environment
+        uses: ./.github/actions/setup-env
+
+      # pip-audit consumes a requirements file, so the lockfile is exported first.
+      # `--no-hashes` because pip-audit resolves against the advisory database, not
+      # against an installation, and hashes only make the file harder to read.
+      # `--locked` so a lockfile that no longer matches pyproject.toml fails here
+      # instead of being silently re-resolved into an audit of the wrong set.
+      # No `uv sync` is needed: the audit reads the lockfile, it never imports the
+      # packages, so the virtual environment is never built.
+      - name: Export locked dependencies
+        run: |
+          uv export --locked --no-hashes --format requirements-txt > requirements-lock.txt
+          cat requirements-lock.txt
+
+      - name: Audit dependencies
+        id: audit
+        run: |
+          set +e
+          uvx pip-audit --requirement requirements-lock.txt --desc --format markdown \
+            > audit-report.md 2> audit-error.log
+          status=$?
+          set -e
+          cat audit-report.md
+          cat audit-error.log
+          if [ "${status}" -eq 0 ]; then
+            echo "vulnerable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # pip-audit exits 1 for "vulnerabilities found" and >1 for its own errors
+          # (network, malformed input). Only the former should open an issue; the
+          # latter must fail loudly instead of being reported as a clean scan.
+          if [ "${status}" -ne 1 ]; then
+            echo "::error::pip-audit failed to run (exit ${status})"
+            exit "${status}"
+          fi
+          echo "vulnerable=true" >> "$GITHUB_OUTPUT"
+
+      # No pull request to turn red, so the findings need a durable home.
+      - name: Report findings into a tracking issue
+        if: steps.audit.outputs.vulnerable == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Dependency vulnerabilities detected in uv.lock"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'Scan from [run %s](%s), commit `%s`.\n\n' \
+              "${GITHUB_RUN_ID}" "${RUN_URL}" "${GITHUB_SHA}"
+            cat audit-report.md
+          } > issue-body.md
+
+          # `gh issue create --label X` is a hard error when X does not exist in
+          # the repository, which would lose the findings entirely on the first
+          # run of a fresh repo. `--force` makes this idempotent: it creates the
+          # label or updates the existing one, and never fails.
+          gh label create dependencies --color 0366d6 \
+            --description "Dependency updates and dependency-related findings" --force
+          gh label create security --color d93f0b \
+            --description "Security vulnerabilities" --force
+
+          existing=$(gh issue list --state open --label dependencies --label security \
+            --search "${TITLE} in:title" --json number --jq '.[0].number // empty')
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file issue-body.md
+            echo "Commented on existing issue #${existing}"
+          else
+            gh issue create --title "${TITLE}" \
+              --label dependencies --label security \
+              --body-file issue-body.md
+          fi
+
+      - name: Fail the run when vulnerabilities were found
+        if: steps.audit.outputs.vulnerable == 'true'
+        run: |
+          echo "::error::pip-audit reported vulnerable dependencies; see audit-report.md in the artifacts"
+          exit 1
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-audit
+          path: |
+            audit-report.md
+            requirements-lock.txt
+          if-no-files-found: ignore
+          retention-days: 30
