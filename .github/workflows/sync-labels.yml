@@ -1,0 +1,40 @@
+# Keeps repository labels in sync with the guide in the "GitHub Labels" section
+# of .github/copilot-instructions.md, as declared in .github/labels.yml.
+#
+# Runs in dry-run (validate only, no writes) on pull requests that touch the
+# labels file, so drift between the doc and the actual repo config is caught
+# in review. Applies for real on push to main and on manual dispatch.
+name: Sync Labels
+
+on:
+  pull_request:
+    paths:
+      - ".github/labels.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/labels.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sync-labels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sync labels
+        uses: crazy-max/ghaction-github-labeler@v5
+        with:
+          yaml-file: .github/labels.yml
+          skip-delete: true
+          dry-run: ${{ github.event_name == 'pull_request' }}

@@ -1,0 +1,63 @@
+# Source of truth for repository labels, synced by
+# .github/workflows/sync-labels.yml (crazy-max/ghaction-github-labeler).
+#
+# Keep this file in lockstep with the "GitHub Labels" section of
+# .github/copilot-instructions.md — that doc is the human-readable guide,
+# this file is what actually gets applied to the repo.
+
+# Code Review Labels
+- name: claude-cr
+  description: "Dispara Claude Code Review on-demand en este PR (modelo automático)"
+  color: "8A63D2"
+- name: haiku-cr
+  description: "Claude Code Review on-demand con el modelo Haiku"
+  color: "1f8536"
+- name: sonnet-cr
+  description: "Claude Code Review on-demand con el modelo Sonnet"
+  color: "bb2f4a"
+- name: opus-cr
+  description: "Claude Code Review on-demand con el modelo Opus"
+  color: "9e043d"
+
+# Dependency Scan Labels
+- name: dependencies
+  description: "Dependency updates and dependency-related findings"
+  color: "0366d6"
+- name: security
+  description: "Security vulnerabilities"
+  color: "d93f0b"
+
+# Dependabot ecosystem label (referenced by .github/dependabot.yml, not part of
+# the original guide, but must exist for the "github-actions" update group).
+- name: github-actions
+  description: "Pull requests that update GitHub Actions"
+  color: "000000"
+
+# GitHub Default Labels
+- name: bug
+  description: "Something isn't working"
+  color: "d73a4a"
+- name: documentation
+  description: "Improvements or additions to documentation"
+  color: "0075ca"
+- name: duplicate
+  description: "This issue or pull request already exists"
+  color: "cfd3d7"
+- name: enhancement
+  description: "New feature or request"
+  color: "a2eeef"
+- name: good first issue
+  description: "Good for newcomers"
+  color: "7057ff"
+- name: help wanted
+  description: "Extra attention is needed"
+  color: "008672"
+- name: invalid
+  description: "This doesn't seem right"
+  color: "e4e669"
+- name: question
+  description: "Further information is requested"
+  color: "d876e3"
+- name: wontfix
+  description: "This will not be worked on"
+  color: "ffffff"
