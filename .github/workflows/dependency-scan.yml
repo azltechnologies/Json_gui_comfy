@@ -24,6 +24,12 @@ permissions:
   contents: read
   issues: write
 
+# Several pushes touching uv.lock in the same PR would otherwise stack up scans
+# whose results are superseded before anyone reads them.
+concurrency:
+  group: dependency-scan-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -50,7 +56,16 @@ jobs:
         id: audit
         run: |
           set +e
-          uvx pip-audit --requirement requirements-lock.txt --desc --format markdown \
+          # `-s osv` is explicit on purpose: pip-audit defaults to the PyPI
+          # advisory service, which would quietly make this scan disagree with
+          # the OSV-based scan the sibling repositories run -- "no findings"
+          # has to mean the same thing everywhere.
+          #
+          # The version is pinned because this is third-party code running with
+          # `issues: write`, and because an unannounced change to its output
+          # format or exit codes would break the parsing below silently.
+          uvx pip-audit@2.10.1 --vulnerability-service osv \
+            --requirement requirements-lock.txt --desc --format markdown \
             > audit-report.md 2> audit-error.log
           status=$?
           set -e
@@ -94,7 +109,7 @@ jobs:
             --description "Security vulnerabilities" --force
 
           existing=$(gh issue list --state open --label dependencies --label security \
-            --search "${TITLE} in:title" --json number --jq '.[0].number // empty')
+            --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // empty')
 
           if [ -n "${existing}" ]; then
             gh issue comment "${existing}" --body-file issue-body.md
