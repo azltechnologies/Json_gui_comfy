@@ -1,9 +1,14 @@
 # Source of truth for repository labels, synced by
-# .github/workflows/sync-labels.yml (crazy-max/ghaction-github-labeler).
+# .github/workflows/sync-labels.yml (EndBug/label-sync).
 #
 # Keep this file in lockstep with the "GitHub Labels" section of
-# .github/copilot-instructions.md — that doc is the human-readable guide,
-# this file is what actually gets applied to the repo.
+# .github/copilot-instructions.md — that doc is the human-readable guide
+# (what each label is FOR), this file is what actually gets applied to the repo
+# (name, color, description). Adding a label here without documenting it there
+# leaves a label nobody knows when to use.
+#
+# Format note: `color` is a bare hex triplet with no leading '#', which is what
+# EndBug/label-sync expects.
 
 # Code Review Labels
 - name: claude-cr

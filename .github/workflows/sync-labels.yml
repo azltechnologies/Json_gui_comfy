@@ -1,29 +1,27 @@
-# Keeps repository labels in sync with the guide in the "GitHub Labels" section
-# of .github/copilot-instructions.md, as declared in .github/labels.yml.
+# Keeps the repository's GitHub labels in sync with the canonical set defined in
+# .github/labels.yml. Creates any missing label and fixes color/description drift.
+# Never deletes a label that exists in the repo but not in the config: EndBug's
+# `delete-other-labels` defaults to 'false' and is deliberately left unset, since
+# removing a label could break references in open issues/PRs or other automation
+# (e.g. the "dependencies" and "github-actions" labels that dependabot.yml
+# attaches to every bump PR).
 #
-# Runs in dry-run (validate only, no writes) on pull requests that touch the
-# labels file, so drift between the doc and the actual repo config is caught
-# in review. Applies for real on push to main and on manual dispatch.
-name: Sync Labels
+# The review labels this syncs (claude-cr / haiku-cr / sonnet-cr / opus-cr) are
+# what claude-code-review.yml keys its model selection off, so a missing label
+# there is a silently unusable review workflow.
+name: Label Sync
 
 on:
-  pull_request:
-    paths:
-      - ".github/labels.yml"
   push:
-    branches:
-      - main
+    branches: [master]
     paths:
       - ".github/labels.yml"
+      - ".github/workflows/sync-labels.yml"
   workflow_dispatch: {}
 
 permissions:
   contents: read
   issues: write
-
-concurrency:
-  group: sync-labels-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   sync:
@@ -32,9 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Sync labels
-        uses: crazy-max/ghaction-github-labeler@v5
+      - name: Sync labels from .github/labels.yml
+        uses: EndBug/label-sync@v2
         with:
-          yaml-file: .github/labels.yml
-          skip-delete: true
-          dry-run: ${{ github.event_name == 'pull_request' }}
+          config-file: .github/labels.yml
+          token: ${{ secrets.GITHUB_TOKEN }}
