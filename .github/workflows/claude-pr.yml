@@ -1,0 +1,127 @@
+name: Claude Code (PR)
+
+# Claude on an existing pull request: review replies, inline comments and
+# follow-up work. Claude commits straight to the PR's own branch, so a
+# conversation here always continues where the previous turn left off.
+#
+# For work started from an issue, see claude-issue.yml. That one is the entry
+# point; this one is where the iteration happens.
+#
+# NOTE: none of these triggers is a `pull_request` event, so GitHub always runs
+# this file from the DEFAULT branch, and `actions/checkout` clones the default
+# branch too. Edits to this workflow (or to .github/actions/setup-env) cannot be
+# tested from a PR — they only take effect once merged.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  claude:
+    # `github.event.issue.pull_request` only exists when the commented issue is
+    # actually a PR; it is what keeps plain issues out of this workflow.
+    if: |
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for Claude to push commits to the PR branch
+      pull-requests: write # Required for Claude to update the PR
+      issues: write # Required for Claude to update its progress comment
+      id-token: write
+      actions: read # Required for Claude to read CI results on PRs
+    steps:
+      # Resolved before the checkout, so the workspace starts on the branch the
+      # conversation is actually about. Without this the checkout would default
+      # to the repository's default branch, and `./.github/actions/setup-env`
+      # below would be master's copy rather than the PR's.
+      #
+      # `gh` ships preinstalled on the runner, so this needs no checkout of its own.
+      - name: Resolve PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          # Present on the review events, absent on issue_comment.
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ -n "${HEAD_REF}" ]; then
+            ref="${HEAD_REF}"
+          else
+            ref=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                    --json headRefName -q .headRefName)
+          fi
+          if [ -z "${ref}" ]; then
+            echo "::error::Could not resolve the head branch for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          echo "Checking out PR branch: ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      # NOTE: this assumes the PR comes from a branch in this repository. For a
+      # fork PR the head ref lives in the fork, so this would either fail or —
+      # worse — silently check out a same-named branch of ours. Supporting forks
+      # means also passing `repository: github.event.pull_request.head.repo.full_name`,
+      # and rethinking push permissions, which is out of scope here.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 1
+
+      - name: Set up environment
+        uses: ./.github/actions/setup-env
+        with:
+          requires-ai-context: "true"
+          source-repo: ${{ secrets.AI_CONTEXT }}
+          context-token: ${{ secrets.AI_CONTEXT_TOKEN }}
+
+      # The venv is materialized up front so the agent can run pytest/ruff/mypy
+      # straight away instead of spending a turn on `uv sync`. `--locked` fails
+      # when uv.lock no longer agrees with pyproject.toml, instead of silently
+      # re-resolving into a non-reproducible environment.
+      - name: Install dependencies
+        run: |
+          uv sync --locked
+
+      - name: Pick model from trigger body
+        id: model
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+        run: |
+          body=$(printf '%s\n%s\n' "$COMMENT_BODY" "$REVIEW_BODY" | tr '[:upper:]' '[:lower:]')
+          if printf '%s' "$body" | grep -Eq '@claude[[:space:]]+opus\b'; then
+            echo "model=opus" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$body" | grep -Eq '@claude[[:space:]]+sonnet\b'; then
+            echo "model=sonnet" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$body" | grep -Eq '@claude[[:space:]]+haiku\b'; then
+            echo "model=haiku" >> "$GITHUB_OUTPUT"
+          else
+            echo "model=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # This is an optional setting that allows Claude to read CI results on PRs
+          additional_permissions: |
+            actions: read
+
+          # Keep the whole PR conversation in a single comment instead of adding
+          # one per turn; iteration here is expected to be chatty.
+          use_sticky_comment: "true"
+
+          # Allow Claude to run the project's dev toolchain and Git/GitHub commands so it
+          # can validate changes (tests, lint, type-check) and manage PRs without manual
+          # approval. Note that the runner has no ComfyUI installation, so the GUI and the
+          # Mimic execution engine cannot actually be run here — only static validation.
+          claude_args: |
+            --allowed-tools Bash(uv:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Bash(gh:*),Bash(git:*) ${{ steps.model.outputs.model != '' && format('--model {0}', steps.model.outputs.model) || '' }}

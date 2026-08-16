@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Keep the development tooling (pyproject.toml / uv.lock) up to date. There are
+  # no runtime dependencies here: torch, comfy and the custom nodes are provided
+  # by the host ComfyUI installation, so this only tracks pytest/ruff/mypy & co.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 10
+
+  # Keep the GitHub Actions used by this repo up to date.
+  #
+  # `/` only covers `.github/workflows`. The pinned actions inside the composite
+  # actions (`actions/checkout`, `actions/setup-python`, `astral-sh/setup-uv`)
+  # live outside that path and would never be updated, so each composite action
+  # directory is listed explicitly.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/setup-env"
+      - "/.github/actions/setup-ai-context"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # One PR per week for the whole toolchain instead of one per action: these
+      # are always reviewed together anyway, and a single green PR-validation run
+      # is enough to prove the set works.
+      github-actions:
+        patterns:
+          - "*"

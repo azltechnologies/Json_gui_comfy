@@ -71,6 +71,9 @@ module = [
     "json_gui.*",
     "node_helpers",
     "nodes",
+    # ComfyUI's own `utils` package. It collides by name with this repository's
+    # top-level `utils.py`, so it never resolves on a standalone checkout.
+    "utils.*",
     # Provided by ComfyUI's own environment, not installed in the dev venv.
     "numpy.*",
     "PIL.*",

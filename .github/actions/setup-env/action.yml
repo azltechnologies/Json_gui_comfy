@@ -1,0 +1,91 @@
+name: Setup Env
+description: >-
+  Prepares the Python toolchain shared by the Copilot and Claude workflows:
+  Python (from `.python-version`) and uv. Callers run `uv sync` to materialize
+  the virtual environment. When `requires-ai-context` is true it also assembles
+  the shared AI context files into the workspace.
+  Note that this repository declares no runtime dependencies: `torch`, `comfy`
+  and the custom nodes come from the host ComfyUI installation, so CI only ever
+  provisions the development tooling (pytest, ruff, mypy).
+
+inputs:
+  requires-ai-context:
+    description: >-
+      Whether the shared AI context files must be assembled into the workspace.
+      Accepts the literal strings "true" or "false".
+    required: false
+    default: "false"
+  source-repo:
+    description: >-
+      The repository containing the additional AI context files. Mandatory when
+      `requires-ai-context` is true, ignored otherwise.
+    required: false
+    default: ""
+  context-token:
+    description: >-
+      Token with read access to `source-repo`. The job's GITHUB_TOKEN is scoped
+      to this repository only, so a PAT or App token is mandatory when
+      `requires-ai-context` is true. Ignored otherwise.
+    required: false
+    default: ""
+  context-ref:
+    description: >-
+      Branch, tag or SHA to pull from `source-repo`. Left empty, the repository's
+      own default branch is used, so `main` is never assumed.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        REQUIRES_AI_CONTEXT: ${{ inputs.requires-ai-context }}
+        SOURCE_REPO: ${{ inputs.source-repo }}
+        CONTEXT_TOKEN: ${{ inputs.context-token }}
+      run: |
+        case "${REQUIRES_AI_CONTEXT}" in
+          true | false) ;;
+          *)
+            echo "::error::requires-ai-context must be 'true' or 'false', got '${REQUIRES_AI_CONTEXT}'"
+            exit 1
+            ;;
+        esac
+        if [ "${REQUIRES_AI_CONTEXT}" = "true" ]; then
+          if [ -z "${SOURCE_REPO}" ]; then
+            echo "::error::source-repo is required when requires-ai-context is 'true' — is the AI_CONTEXT secret set on this repository?"
+            exit 1
+          fi
+          if [ -z "${CONTEXT_TOKEN}" ]; then
+            echo "::error::context-token is required when requires-ai-context is 'true' — is the AI_CONTEXT_TOKEN secret set on this repository?"
+            exit 1
+          fi
+        fi
+
+    # Read from `.python-version` rather than hardcoding "3.13": a literal here
+    # would be a second source of truth that can silently drift away from the
+    # file uv itself honours, and from `requires-python` (>=3.13,<3.14).
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version-file: .python-version
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+
+    - name: Verify toolchain
+      shell: bash
+      run: |
+        python --version
+        uv --version
+
+    - name: Set up AI context
+      if: inputs.requires-ai-context == 'true'
+      uses: ./.github/actions/setup-ai-context
+      with:
+        source-repo: ${{ inputs.source-repo }}
+        context-token: ${{ inputs.context-token }}
+        context-ref: ${{ inputs.context-ref }}

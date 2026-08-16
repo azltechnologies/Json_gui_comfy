@@ -1,0 +1,104 @@
+name: Setup AI Context
+description: >-
+  Pulls the shared AI context repository and lets it install itself on the
+  runner. Assumes the calling repository is already checked out.
+
+# ---------------------------------------------------------------------------
+# Contract with `source-repo`
+# ---------------------------------------------------------------------------
+#
+# The context repository must contain an `install-ci.sh` at its root. It is run
+# as `bash install-ci.sh`, so the executable bit is neither required nor checked;
+# a shebang is enough, and nothing breaks on a checkout that loses file modes.
+# That script -- not this action -- owns the knowledge of the repository's own
+# layout: what goes into the user-level Claude configuration, what is published
+# for Copilot, and what is deliberately left behind.
+#
+# This action owns only the environment, passed in as:
+#
+#   CLAUDE_HOME       where the user-level Claude config goes ($HOME/.claude)
+#   INSTRUCTIONS_DIR  where Copilot instruction files go (.github/instructions)
+#   SKILLS_DIR        where Copilot agent skills go (.github/skills)
+#
+# The split matters: several repositories consume this action, and a change to
+# the context repository's structure has to be one commit in one place rather
+# than a pull request in each consumer.
+#
+# The cost is a real escalation, and it deserves to be stated plainly rather than
+# softened: this action used to perform a fixed, small set of file operations on
+# the pulled context, and now hands it full shell execution. Combined with the
+# default `context-ref` (the source repository's default branch), a push there
+# runs in every consuming job on its next run -- including `claude-code-review`,
+# which holds `pull-requests: write`. There is no review gate.
+#
+# That is accepted here because `source-repo` already supplies the instructions
+# steering an agent with write access, so it was never outside the trust
+# boundary; the change is in blast radius, not in who is trusted. Pin
+# `context-ref` to a tag or SHA when that assumption stops holding -- for
+# instance if the context repository gains contributors who are not also
+# trusted on the consuming repositories.
+
+inputs:
+  source-repo:
+    description: The repository containing the additional AI context files
+    required: true
+  context-token:
+    description: >-
+      Token with read access to `source-repo`. The job's GITHUB_TOKEN cannot
+      reach another repository, so a PAT or App token is required.
+    required: true
+  context-ref:
+    description: >-
+      Branch, tag or SHA to pull from `source-repo`. Left empty, the repository's
+      own default branch is used, so `main` is never assumed. Note what empty
+      means here: `install-ci.sh` is executed, so tracking a branch is unpinned
+      *code execution*, not merely unpinned file copying. Pin a tag or SHA to
+      make that reproducible.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Set environment variables
+      shell: bash
+      run: |
+        {
+          echo "CONTEXT_DIR=_local_ai_context_"
+          echo "INSTRUCTIONS_DIR=.github/instructions"
+          echo "SKILLS_DIR=.github/skills"
+          echo "CLAUDE_HOME=${HOME}/.claude"
+        } >> "$GITHUB_ENV"
+
+    - name: Pull context dir
+      uses: actions/checkout@v7
+      with:
+        repository: ${{ inputs.source-repo }}
+        token: ${{ inputs.context-token }}
+        ref: ${{ inputs.context-ref }}
+        path: ${{ env.CONTEXT_DIR }}
+        persist-credentials: false
+
+    # No `env:` for CLAUDE_HOME / INSTRUCTIONS_DIR / CONTEXT_DIR: the step above
+    # wrote them to $GITHUB_ENV, and Actions exports those to every later step as
+    # real environment variables. Re-mapping them here would be duplication.
+    # `source-repo` is different -- it is an input, so it has to be carried in,
+    # and it goes through `env:` rather than being interpolated into the script,
+    # per GitHub's hardening guidance on expressions inside `run:`.
+    - name: Install AI context
+      shell: bash
+      env:
+        SOURCE_REPO: ${{ inputs.source-repo }}
+      run: |
+        installer="${CONTEXT_DIR}/install-ci.sh"
+        if [ ! -f "$installer" ]; then
+          echo "::error::${SOURCE_REPO} has no install-ci.sh at its root; found: $(ls -A "${CONTEXT_DIR}" 2>/dev/null | tr '\n' ' ')"
+          exit 1
+        fi
+        bash "$installer"
+
+    - name: Clean up context dir
+      if: always()
+      shell: bash
+      run: |
+        rm -rf "${CONTEXT_DIR}"
