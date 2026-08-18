@@ -309,7 +309,7 @@ class NodeExecutor:
         worker_target = partial(
             NodeExecutor._node_executor_target,
             self._node.__class__,
-            self._node.init_args,
+            init_args,
             self._node_process_args,
             self._raw_nodes,
             save_call,
