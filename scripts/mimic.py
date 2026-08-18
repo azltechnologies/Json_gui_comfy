@@ -737,7 +737,7 @@ class MimicNode(ABC, Generic[T]):
         self._return_cache = False
         logging.info("====== Processing %s ======", self.__class__.key())
         uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
-        res: T
+        res: T | None = None
         try:
             res = self._feed_function(self._process_impl, *uw_args, **uw_kwargs)
             self.save_all_unsaved_tensors()
@@ -751,7 +751,7 @@ class MimicNode(ABC, Generic[T]):
         self._exec_args = {"args": list(args), "kwargs": kwargs}
         self._last_output = res
         self._return_cache = True
-        return res
+        return cast(T, res)
 
     @final
     def add_unsaved_tensor(self, tensor: Tensor, name: str) -> None:
